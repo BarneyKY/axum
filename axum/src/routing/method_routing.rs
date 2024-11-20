@@ -13,7 +13,6 @@ use crate::{
     routing::{future::RouteFuture, Fallback, MethodFilter, Route},
 };
 use axum_core::{extract::Request, response::IntoResponse, BoxError};
-use bytes::BytesMut;
 use std::{
     convert::Infallible,
     fmt,
@@ -432,7 +431,6 @@ where
 {
     MethodRouter::new()
         .fallback_service(svc)
-        .skip_allow_header()
 }
 
 top_level_handler_fn!(connect, CONNECT);
@@ -510,7 +508,7 @@ where
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
-    MethodRouter::new().fallback(handler).skip_allow_header()
+    MethodRouter::new().fallback(handler)
 }
 
 /// A [`Service`] that accepts requests based on a [`MethodFilter`] and
@@ -554,34 +552,8 @@ pub struct MethodRouter<S = (), E = Infallible> {
     trace: MethodEndpoint<S, E>,
     connect: MethodEndpoint<S, E>,
     fallback: Fallback<S, E>,
-    allow_header: AllowHeader,
 }
 
-#[derive(Clone, Debug)]
-enum AllowHeader {
-    /// No `Allow` header value has been built-up yet. This is the default state
-    None,
-    /// Don't set an `Allow` header. This is used when `any` or `any_service` are called.
-    Skip,
-    /// The current value of the `Allow` header.
-    Bytes(BytesMut),
-}
-
-impl AllowHeader {
-    fn merge(self, other: Self) -> Self {
-        match (self, other) {
-            (AllowHeader::Skip, _) | (_, AllowHeader::Skip) => AllowHeader::Skip,
-            (AllowHeader::None, AllowHeader::None) => AllowHeader::None,
-            (AllowHeader::None, AllowHeader::Bytes(pick)) => AllowHeader::Bytes(pick),
-            (AllowHeader::Bytes(pick), AllowHeader::None) => AllowHeader::Bytes(pick),
-            (AllowHeader::Bytes(mut a), AllowHeader::Bytes(b)) => {
-                a.extend_from_slice(b",");
-                a.extend_from_slice(&b);
-                AllowHeader::Bytes(a)
-            }
-        }
-    }
-}
 
 impl<S, E> fmt::Debug for MethodRouter<S, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -596,7 +568,6 @@ impl<S, E> fmt::Debug for MethodRouter<S, E> {
             .field("trace", &self.trace)
             .field("connect", &self.connect)
             .field("fallback", &self.fallback)
-            .field("allow_header", &self.allow_header)
             .finish()
     }
 }
@@ -761,7 +732,6 @@ where
             put: MethodEndpoint::None,
             trace: MethodEndpoint::None,
             connect: MethodEndpoint::None,
-            allow_header: AllowHeader::None,
             fallback: Fallback::Default(fallback),
         }
     }
@@ -778,7 +748,6 @@ where
             put: self.put.with_state(&state),
             trace: self.trace.with_state(&state),
             connect: self.connect.with_state(&state),
-            allow_header: self.allow_header,
             fallback: self.fallback.with_state(state),
         }
     }
@@ -826,8 +795,6 @@ where
             endpoint: &MethodEndpoint<S, E>,
             endpoint_filter: MethodFilter,
             filter: MethodFilter,
-            allow_header: &mut AllowHeader,
-            methods: &[&'static str],
         ) where
             MethodEndpoint<S, E>: Clone,
             S: Clone,
@@ -840,9 +807,6 @@ where
                     )
                 }
                 *out = endpoint.clone();
-                for method in methods {
-                    append_allow_header(allow_header, method);
-                }
             }
         }
 
@@ -852,8 +816,6 @@ where
             &endpoint,
             filter,
             MethodFilter::GET,
-            &mut self.allow_header,
-            &["GET", "HEAD"],
         );
 
         set_endpoint(
@@ -862,8 +824,6 @@ where
             &endpoint,
             filter,
             MethodFilter::HEAD,
-            &mut self.allow_header,
-            &["HEAD"],
         );
 
         set_endpoint(
@@ -872,8 +832,6 @@ where
             &endpoint,
             filter,
             MethodFilter::TRACE,
-            &mut self.allow_header,
-            &["TRACE"],
         );
 
         set_endpoint(
@@ -882,8 +840,6 @@ where
             &endpoint,
             filter,
             MethodFilter::PUT,
-            &mut self.allow_header,
-            &["PUT"],
         );
 
         set_endpoint(
@@ -892,8 +848,6 @@ where
             &endpoint,
             filter,
             MethodFilter::POST,
-            &mut self.allow_header,
-            &["POST"],
         );
 
         set_endpoint(
@@ -902,8 +856,6 @@ where
             &endpoint,
             filter,
             MethodFilter::PATCH,
-            &mut self.allow_header,
-            &["PATCH"],
         );
 
         set_endpoint(
@@ -912,8 +864,6 @@ where
             &endpoint,
             filter,
             MethodFilter::OPTIONS,
-            &mut self.allow_header,
-            &["OPTIONS"],
         );
 
         set_endpoint(
@@ -922,8 +872,6 @@ where
             &endpoint,
             filter,
             MethodFilter::DELETE,
-            &mut self.allow_header,
-            &["DELETE"],
         );
 
         set_endpoint(
@@ -932,8 +880,6 @@ where
             &endpoint,
             filter,
             MethodFilter::CONNECT,
-            &mut self.allow_header,
-            &["CONNECT"],
         );
 
         self
@@ -985,7 +931,6 @@ where
             trace: self.trace.map(layer_fn.clone()),
             connect: self.connect.map(layer_fn.clone()),
             fallback: self.fallback.map(layer_fn),
-            allow_header: self.allow_header,
         }
     }
 
@@ -1078,7 +1023,6 @@ where
             .merge(other.fallback)
             .expect("Cannot merge two `MethodRouter`s that both have a fallback");
 
-        self.allow_header = self.allow_header.merge(other.allow_header);
 
         self
     }
@@ -1103,11 +1047,6 @@ where
         S: 'static,
     {
         self.layer(HandleErrorLayer::new(f))
-    }
-
-    fn skip_allow_header(mut self) -> Self {
-        self.allow_header = AllowHeader::Skip;
-        self
     }
 
     pub(crate) fn call_with_state(&self, req: Request, state: S) -> RouteFuture<E> {
@@ -1144,7 +1083,6 @@ where
             trace,
             connect,
             fallback,
-            allow_header,
         } = self;
 
         call!(req, HEAD, head);
@@ -1158,33 +1096,8 @@ where
         call!(req, TRACE, trace);
         call!(req, CONNECT, connect);
 
-        let future = fallback.clone().call_with_state(req, state);
+        fallback.clone().call_with_state(req, state)
 
-        match allow_header {
-            AllowHeader::None => future.allow_header(Bytes::new()),
-            AllowHeader::Skip => future,
-            AllowHeader::Bytes(allow_header) => future.allow_header(allow_header.clone().freeze()),
-        }
-    }
-}
-
-fn append_allow_header(allow_header: &mut AllowHeader, method: &'static str) {
-    match allow_header {
-        AllowHeader::None => {
-            *allow_header = AllowHeader::Bytes(BytesMut::from(method));
-        }
-        AllowHeader::Skip => {}
-        AllowHeader::Bytes(allow_header) => {
-            if let Ok(s) = std::str::from_utf8(allow_header) {
-                if !s.contains(method) {
-                    allow_header.extend_from_slice(b",");
-                    allow_header.extend_from_slice(method.as_bytes());
-                }
-            } else {
-                #[cfg(debug_assertions)]
-                panic!("`allow_header` contained invalid uft-8. This should never happen")
-            }
-        }
     }
 }
 
@@ -1201,7 +1114,6 @@ impl<S, E> Clone for MethodRouter<S, E> {
             trace: self.trace.clone(),
             connect: self.connect.clone(),
             fallback: self.fallback.clone(),
-            allow_header: self.allow_header.clone(),
         }
     }
 }
