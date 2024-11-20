@@ -719,7 +719,7 @@ where
     /// requests.
     pub fn new() -> Self {
         let fallback = Route::new(service_fn(|_: Request| async {
-            Ok(StatusCode::METHOD_NOT_ALLOWED.into_response())
+            Ok(StatusCode::NOT_FOUND.into_response())
         }));
 
         Self {
