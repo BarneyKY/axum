@@ -8,7 +8,11 @@ use crate::{
     routing::url_params::UrlParams,
     util::PercentDecodedStr,
 };
-use axum_core::response::{IntoResponse, Response};
+use axum_core::{
+    extract::OptionalFromRequestParts,
+    response::{IntoResponse, Response},
+    RequestPartsExt as _,
+};
 use http::{request::Parts, StatusCode};
 use serde::de::DeserializeOwned;
 use std::{fmt, sync::Arc};
@@ -19,6 +23,12 @@ use std::{fmt, sync::Arc};
 /// Any percent encoded parameters will be automatically decoded. The decoded
 /// parameters must be valid UTF-8, otherwise `Path` will fail and return a `400
 /// Bad Request` response.
+///
+/// # `Option<Path<T>>` behavior
+///
+/// You can use `Option<Path<T>>` as an extractor to allow the same handler to
+/// be used in a route with parameters that deserialize to `T`, and another
+/// route with no parameters at all.
 ///
 /// # Example
 ///
@@ -173,6 +183,29 @@ where
                 PathRejection::FailedToDeserializePathParams(FailedToDeserializePathParams(err))
             })
             .map(Path)
+    }
+}
+
+impl<T, S> OptionalFromRequestParts<S> for Path<T>
+where
+    T: DeserializeOwned + Send + 'static,
+    S: Send + Sync,
+{
+    type Rejection = PathRejection;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        match parts.extract::<Self>().await {
+            Ok(Self(params)) => Ok(Some(Self(params))),
+            Err(PathRejection::FailedToDeserializePathParams(e))
+                if matches!(e.kind(), ErrorKind::WrongNumberOfParameters { got: 0, .. }) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -949,7 +982,7 @@ mod tests {
         let body = res.text().await;
         assert_eq!(
             body,
-            r#"Invalid URL: Cannot parse `res` with value `123123-123-123123`: UUID parsing failed: invalid group count: expected 5, found 3"#
+            "Invalid URL: Cannot parse `res` with value `123123-123-123123`: UUID parsing failed: invalid group count: expected 5, found 3"
         );
     }
 
@@ -970,7 +1003,7 @@ mod tests {
         let body = res.text().await;
         assert_eq!(
             body,
-            r#"Invalid URL: Cannot parse `res` with value `456456-123-456456`: UUID parsing failed: invalid group count: expected 5, found 3"#
+            "Invalid URL: Cannot parse `res` with value `456456-123-456456`: UUID parsing failed: invalid group count: expected 5, found 3"
         );
     }
 
@@ -992,6 +1025,6 @@ mod tests {
         let client = TestClient::new(app);
         let res = client.get("/te/st/_thing").await;
         let body = res.text().await;
-        assert_eq!(body, r#"Invalid URL: array types are not supported"#);
+        assert_eq!(body, "Invalid URL: array types are not supported");
     }
 }
