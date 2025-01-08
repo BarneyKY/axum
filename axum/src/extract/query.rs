@@ -1,23 +1,10 @@
-use super::{rejection::*, FromRequestParts, OptionalFromRequestParts};
+use super::{rejection::*, FromRequestParts};
 use http::{request::Parts, Uri};
 use serde::de::DeserializeOwned;
 
 /// Extractor that deserializes query strings into some type.
 ///
 /// `T` is expected to implement [`serde::Deserialize`].
-///
-/// # `Option<Query<T>>` behavior
-///
-/// If `Query<T>` itself is used as an extractor and there is no query string in
-/// the request URL, `T`'s `Deserialize` implementation is called on an empty
-/// string instead.
-///
-/// You can avoid this by using `Option<Query<T>>`, which gives you `None` in
-/// the case that there is no query string in the request URL.
-///
-/// Note that an empty query string is not the same as no query string, that is
-/// `https://example.org/` and `https://example.org/?` are not treated the same
-/// in this case.
 ///
 /// # Examples
 ///
@@ -75,27 +62,6 @@ where
     }
 }
 
-impl<T, S> OptionalFromRequestParts<S> for Query<T>
-where
-    T: DeserializeOwned,
-    S: Send + Sync,
-{
-    type Rejection = QueryRejection;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Option<Self>, Self::Rejection> {
-        if let Some(query) = parts.uri.query() {
-            let value = serde_urlencoded::from_str(query)
-                .map_err(FailedToDeserializeQueryString::from_err)?;
-            Ok(Some(Self(value)))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 impl<T> Query<T>
 where
     T: DeserializeOwned,
@@ -121,8 +87,10 @@ where
     /// ```
     pub fn try_from_uri(value: &Uri) -> Result<Self, QueryRejection> {
         let query = value.query().unwrap_or_default();
-        let params =
-            serde_urlencoded::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
+        let deserializer =
+            serde_urlencoded::Deserializer::new(form_urlencoded::parse(query.as_bytes()));
+        let params = serde_path_to_error::deserialize(deserializer)
+            .map_err(FailedToDeserializeQueryString::from_err)?;
         Ok(Query(params))
     }
 }
@@ -201,6 +169,10 @@ mod tests {
 
         let res = client.get("/?n=hi").await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize query string: n: invalid digit found in string"
+        );
     }
 
     #[test]

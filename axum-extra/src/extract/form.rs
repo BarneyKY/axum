@@ -1,11 +1,11 @@
+use axum::extract::rejection::RawFormRejection;
 use axum::{
-    extract::{rejection::RawFormRejection, FromRequest, RawForm, Request},
-    response::{IntoResponse, Response},
-    Error, RequestExt,
+    extract::{FromRequest, RawForm, Request},
+    RequestExt,
 };
-use http::StatusCode;
+use axum_core::__composite_rejection as composite_rejection;
+use axum_core::__define_rejection as define_rejection;
 use serde::de::DeserializeOwned;
-use std::fmt;
 
 /// Extractor that deserializes `application/x-www-form-urlencoded` requests
 /// into some type.
@@ -51,63 +51,49 @@ where
     type Rejection = FormRejection;
 
     async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
-        let RawForm(bytes) = req
-            .extract()
-            .await
-            .map_err(FormRejection::RawFormRejection)?;
+        let is_get_or_head =
+            req.method() == http::Method::GET || req.method() == http::Method::HEAD;
 
-        serde_html_form::from_bytes::<T>(&bytes)
+        let RawForm(bytes) = req.extract().await?;
+
+        let deserializer = serde_html_form::Deserializer::new(form_urlencoded::parse(&bytes));
+
+        serde_path_to_error::deserialize::<_, T>(deserializer)
             .map(Self)
-            .map_err(|err| FormRejection::FailedToDeserializeForm(Error::new(err)))
+            .map_err(|err| {
+                if is_get_or_head {
+                    FailedToDeserializeForm::from_err(err).into()
+                } else {
+                    FailedToDeserializeFormBody::from_err(err).into()
+                }
+            })
     }
 }
 
-/// Rejection used for [`Form`].
-///
-/// Contains one variant for each way the [`Form`] extractor can fail.
-#[derive(Debug)]
-#[non_exhaustive]
-#[cfg(feature = "form")]
-pub enum FormRejection {
-    #[allow(missing_docs)]
-    RawFormRejection(RawFormRejection),
-    #[allow(missing_docs)]
-    FailedToDeserializeForm(Error),
+define_rejection! {
+    #[status = BAD_REQUEST]
+    #[body = "Failed to deserialize form"]
+    /// Rejection type used if the [`Form`](Form) extractor is unable to
+    /// deserialize the form into the target type.
+    pub struct FailedToDeserializeForm(Error);
 }
 
-impl IntoResponse for FormRejection {
-    fn into_response(self) -> Response {
-        match self {
-            Self::RawFormRejection(inner) => inner.into_response(),
-            Self::FailedToDeserializeForm(inner) => {
-                let body = format!("Failed to deserialize form: {inner}");
-                let status = StatusCode::BAD_REQUEST;
-                axum_core::__log_rejection!(
-                    rejection_type = Self,
-                    body_text = body,
-                    status = status,
-                );
-                (status, body).into_response()
-            }
-        }
-    }
+define_rejection! {
+    #[status = UNPROCESSABLE_ENTITY]
+    #[body = "Failed to deserialize form body"]
+    /// Rejection type used if the [`Form`](Form) extractor is unable to
+    /// deserialize the form body into the target type.
+    pub struct FailedToDeserializeFormBody(Error);
 }
 
-impl fmt::Display for FormRejection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RawFormRejection(inner) => inner.fmt(f),
-            Self::FailedToDeserializeForm(inner) => inner.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for FormRejection {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::RawFormRejection(inner) => Some(inner),
-            Self::FailedToDeserializeForm(inner) => Some(inner),
-        }
+composite_rejection! {
+    /// Rejection used for [`Form`].
+    ///
+    /// Contains one variant for each way the [`Form`] extractor can fail.
+    pub enum FormRejection {
+        RawFormRejection,
+        FailedToDeserializeForm,
+        FailedToDeserializeFormBody,
     }
 }
 
@@ -115,8 +101,11 @@ impl std::error::Error for FormRejection {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use axum::{routing::post, Router};
+    use axum::routing::{on, post, MethodFilter};
+    use axum::Router;
     use http::header::CONTENT_TYPE;
+    use http::StatusCode;
+    use mime::APPLICATION_WWW_FORM_URLENCODED;
     use serde::Deserialize;
 
     #[tokio::test]
@@ -142,5 +131,42 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.text().await, "one,two");
+    }
+
+    #[tokio::test]
+    async fn deserialize_error_status_codes() {
+        #[allow(dead_code)]
+        #[derive(Deserialize)]
+        struct Payload {
+            a: i32,
+        }
+
+        let app = Router::new().route(
+            "/",
+            on(
+                MethodFilter::GET.or(MethodFilter::POST),
+                |_: Form<Payload>| async {},
+            ),
+        );
+
+        let client = TestClient::new(app);
+
+        let res = client.get("/?a=false").await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize form: a: invalid digit found in string"
+        );
+
+        let res = client
+            .post("/")
+            .header(CONTENT_TYPE, APPLICATION_WWW_FORM_URLENCODED.as_ref())
+            .body("a=false")
+            .await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize form body: a: invalid digit found in string"
+        );
     }
 }

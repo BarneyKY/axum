@@ -1,6 +1,5 @@
 use crate::{
     body::{Body, HttpBody},
-    box_clone_service::BoxCloneService,
     response::Response,
 };
 use axum_core::{extract::Request, response::IntoResponse};
@@ -17,7 +16,7 @@ use std::{
     task::{ready, Context, Poll},
 };
 use tower::{
-    util::{MapErrLayer, MapResponseLayer, Oneshot},
+    util::{BoxCloneSyncService, MapErrLayer, MapResponseLayer, Oneshot},
     ServiceExt,
 };
 use tower_layer::Layer;
@@ -27,7 +26,7 @@ use tower_service::Service;
 ///
 /// You normally shouldn't need to care about this type. It's used in
 /// [`Router::layer`](super::Router::layer).
-pub struct Route<E = Infallible>(BoxCloneService<Request, Response, E>);
+pub struct Route<E = Infallible>(BoxCloneSyncService<Request, Response, E>);
 
 impl<E> Route<E> {
     pub(crate) fn new<T>(svc: T) -> Self
@@ -36,7 +35,7 @@ impl<E> Route<E> {
         T::Response: IntoResponse + 'static,
         T::Future: Send + 'static,
     {
-        Self(BoxCloneService::new(
+        Self(BoxCloneSyncService::new(
             svc.map_response(IntoResponse::into_response),
         ))
     }
@@ -114,14 +113,17 @@ pin_project! {
     /// Response future for [`Route`].
     pub struct RouteFuture<E> {
         #[pin]
-        inner: Oneshot<BoxCloneService<Request, Response, E>, Request>,
+        inner: Oneshot<BoxCloneSyncService<Request, Response, E>, Request>,
         method: Method,
         top_level: bool,
     }
 }
 
 impl<E> RouteFuture<E> {
-    fn new(method: Method, inner: Oneshot<BoxCloneService<Request, Response, E>, Request>) -> Self {
+    fn new(
+        method: Method,
+        inner: Oneshot<BoxCloneSyncService<Request, Response, E>, Request>,
+    ) -> Self {
         Self {
             inner,
             method,
@@ -206,7 +208,7 @@ impl Future for InfallibleRouteFuture {
     type Output = Response;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match futures_util::ready!(self.project().future.poll(cx)) {
+        match ready!(self.project().future.poll(cx)) {
             Ok(response) => Poll::Ready(response),
             Err(err) => match err {},
         }

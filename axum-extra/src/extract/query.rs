@@ -1,11 +1,8 @@
-use axum::{
-    extract::{FromRequestParts, OptionalFromRequestParts},
-    response::{IntoResponse, Response},
-    Error,
-};
-use http::{request::Parts, StatusCode};
+use axum::extract::FromRequestParts;
+use axum_core::__composite_rejection as composite_rejection;
+use axum_core::__define_rejection as define_rejection;
+use http::request::Parts;
 use serde::de::DeserializeOwned;
-use std::fmt;
 
 /// Extractor that deserializes query strings into some type.
 ///
@@ -17,19 +14,6 @@ use std::fmt;
 /// are sent by multiple `<input>` attributes of the same name (e.g. checkboxes) and `<select>`s
 /// with the `multiple` attribute. Those values can be collected into a `Vec` or other sequential
 /// container.
-///
-/// # `Option<Query<T>>` behavior
-///
-/// If `Query<T>` itself is used as an extractor and there is no query string in
-/// the request URL, `T`'s `Deserialize` implementation is called on an empty
-/// string instead.
-///
-/// You can avoid this by using `Option<Query<T>>`, which gives you `None` in
-/// the case that there is no query string in the request URL.
-///
-/// Note that an empty query string is not the same as no query string, that is
-/// `https://example.org/` and `https://example.org/?` are not treated the same
-/// in this case.
 ///
 /// # Example
 ///
@@ -103,82 +87,36 @@ where
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
-        let value = serde_html_form::from_str(query)
-            .map_err(|err| QueryRejection::FailedToDeserializeQueryString(Error::new(err)))?;
+        let deserializer =
+            serde_html_form::Deserializer::new(form_urlencoded::parse(query.as_bytes()));
+        let value = serde_path_to_error::deserialize(deserializer)
+            .map_err(FailedToDeserializeQueryString::from_err)?;
         Ok(Query(value))
-    }
-}
-
-impl<T, S> OptionalFromRequestParts<S> for Query<T>
-where
-    T: DeserializeOwned,
-    S: Send + Sync,
-{
-    type Rejection = QueryRejection;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Option<Self>, Self::Rejection> {
-        if let Some(query) = parts.uri.query() {
-            let value = serde_html_form::from_str(query)
-                .map_err(|err| QueryRejection::FailedToDeserializeQueryString(Error::new(err)))?;
-            Ok(Some(Self(value)))
-        } else {
-            Ok(None)
-        }
     }
 }
 
 axum_core::__impl_deref!(Query);
 
-/// Rejection used for [`Query`].
-///
-/// Contains one variant for each way the [`Query`] extractor can fail.
-#[derive(Debug)]
-#[non_exhaustive]
-#[cfg(feature = "query")]
-pub enum QueryRejection {
-    #[allow(missing_docs)]
-    FailedToDeserializeQueryString(Error),
+define_rejection! {
+    #[status = BAD_REQUEST]
+    #[body = "Failed to deserialize query string"]
+    /// Rejection type used if the [`Query`] extractor is unable to
+    /// deserialize the query string into the target type.
+    pub struct FailedToDeserializeQueryString(Error);
 }
 
-impl IntoResponse for QueryRejection {
-    fn into_response(self) -> Response {
-        match self {
-            Self::FailedToDeserializeQueryString(inner) => {
-                let body = format!("Failed to deserialize query string: {inner}");
-                let status = StatusCode::BAD_REQUEST;
-                axum_core::__log_rejection!(
-                    rejection_type = Self,
-                    body_text = body,
-                    status = status,
-                );
-                (status, body).into_response()
-            }
-        }
-    }
-}
-
-impl fmt::Display for QueryRejection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FailedToDeserializeQueryString(inner) => inner.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for QueryRejection {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::FailedToDeserializeQueryString(inner) => Some(inner),
-        }
+composite_rejection! {
+    /// Rejection used for [`Query`].
+    ///
+    /// Contains one variant for each way the [`Query`] extractor can fail.
+    pub enum QueryRejection {
+        FailedToDeserializeQueryString,
     }
 }
 
 /// Extractor that deserializes query strings into `None` if no query parameters are present.
-/// Otherwise behaviour is identical to [`Query`]
 ///
+/// Otherwise behaviour is identical to [`Query`].
 /// `T` is expected to implement [`serde::Deserialize`].
 ///
 /// # Example
@@ -216,11 +154,9 @@ impl std::error::Error for QueryRejection {
 ///
 /// [example]: https://github.com/tokio-rs/axum/blob/main/examples/query-params-with-empty-strings/src/main.rs
 #[cfg_attr(docsrs, doc(cfg(feature = "query")))]
-#[deprecated = "Use Option<Query<_>> instead"]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OptionalQuery<T>(pub Option<T>);
 
-#[allow(deprecated)]
 impl<T, S> FromRequestParts<S> for OptionalQuery<T>
 where
     T: DeserializeOwned,
@@ -230,9 +166,10 @@ where
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         if let Some(query) = parts.uri.query() {
-            let value = serde_html_form::from_str(query).map_err(|err| {
-                OptionalQueryRejection::FailedToDeserializeQueryString(Error::new(err))
-            })?;
+            let deserializer =
+                serde_html_form::Deserializer::new(form_urlencoded::parse(query.as_bytes()));
+            let value = serde_path_to_error::deserialize(deserializer)
+                .map_err(FailedToDeserializeQueryString::from_err)?;
             Ok(OptionalQuery(Some(value)))
         } else {
             Ok(OptionalQuery(None))
@@ -240,7 +177,6 @@ where
     }
 }
 
-#[allow(deprecated)]
 impl<T> std::ops::Deref for OptionalQuery<T> {
     type Target = Option<T>;
 
@@ -250,7 +186,6 @@ impl<T> std::ops::Deref for OptionalQuery<T> {
     }
 }
 
-#[allow(deprecated)]
 impl<T> std::ops::DerefMut for OptionalQuery<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -258,52 +193,23 @@ impl<T> std::ops::DerefMut for OptionalQuery<T> {
     }
 }
 
-/// Rejection used for [`OptionalQuery`].
-///
-/// Contains one variant for each way the [`OptionalQuery`] extractor can fail.
-#[derive(Debug)]
-#[non_exhaustive]
-#[cfg(feature = "query")]
-pub enum OptionalQueryRejection {
-    #[allow(missing_docs)]
-    FailedToDeserializeQueryString(Error),
-}
-
-impl IntoResponse for OptionalQueryRejection {
-    fn into_response(self) -> Response {
-        match self {
-            Self::FailedToDeserializeQueryString(inner) => (
-                StatusCode::BAD_REQUEST,
-                format!("Failed to deserialize query string: {inner}"),
-            )
-                .into_response(),
-        }
-    }
-}
-
-impl fmt::Display for OptionalQueryRejection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FailedToDeserializeQueryString(inner) => inner.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for OptionalQueryRejection {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::FailedToDeserializeQueryString(inner) => Some(inner),
-        }
+composite_rejection! {
+    /// Rejection used for [`OptionalQuery`].
+    ///
+    /// Contains one variant for each way the [`OptionalQuery`] extractor can fail.
+    pub enum OptionalQueryRejection {
+        FailedToDeserializeQueryString,
     }
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use axum::{routing::post, Router};
+    use axum::routing::{get, post};
+    use axum::Router;
     use http::header::CONTENT_TYPE;
+    use http::StatusCode;
     use serde::Deserialize;
 
     #[tokio::test]
@@ -329,6 +235,27 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.text().await, "one,two");
+    }
+
+    #[tokio::test]
+    async fn correct_rejection_status_code() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Params {
+            n: i32,
+        }
+
+        async fn handler(_: Query<Params>) {}
+
+        let app = Router::new().route("/", get(handler));
+        let client = TestClient::new(app);
+
+        let res = client.get("/?n=hi").await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize query string: n: invalid digit found in string"
+        );
     }
 
     #[tokio::test]
