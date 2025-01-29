@@ -5,11 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# Unreleased
+# 0.8.2
 
 - **added:** Implement `OptionalFromRequest` for `Json` ([#3142])
+- **added:** Implement `OptionalFromRequest` for `Extension` ([#3157])
+- **changed:** Make the `status` function of rejections a `const` function, such
+  as `JsonRejection`, `QueryRejection` and `PathRejection` ([#3168])
 
 [#3142]: https://github.com/tokio-rs/axum/pull/3142
+[#3157]: https://github.com/tokio-rs/axum/pull/3157
+[#3168]: https://github.com/tokio-rs/axum/pull/3168
+
+# 0.8.1
+
+- **fixed:** Removed the warning about breaking changes from README
 
 # 0.8.0
 

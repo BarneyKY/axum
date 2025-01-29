@@ -429,7 +429,7 @@ impl FailedToDeserializePathParams {
     }
 
     /// Get the status code used for this rejection.
-    pub fn status(&self) -> StatusCode {
+    pub const fn status(&self) -> StatusCode {
         match self.0.kind {
             ErrorKind::Message(_)
             | ErrorKind::DeserializeError { .. }
@@ -563,7 +563,7 @@ impl InvalidUtf8InPathParam {
     }
 
     /// Get the status code used for this rejection.
-    pub fn status(&self) -> StatusCode {
+    pub const fn status(&self) -> StatusCode {
         StatusCode::BAD_REQUEST
     }
 }
@@ -978,8 +978,8 @@ mod tests {
         );
 
         let client = TestClient::new(app);
-        let res = client.get("/resources/123123-123-123123").await;
-        let body = res.text().await;
+        let response = client.get("/resources/123123-123-123123").await;
+        let body = response.text().await;
         assert_eq!(
             body,
             "Invalid URL: Cannot parse `res` with value `123123-123-123123`: UUID parsing failed: invalid group count: expected 5, found 3"
@@ -999,8 +999,8 @@ mod tests {
         );
 
         let client = TestClient::new(app);
-        let res = client.get("/resources/456456-123-456456/sub/123").await;
-        let body = res.text().await;
+        let response = client.get("/resources/456456-123-456456/sub/123").await;
+        let body = response.text().await;
         assert_eq!(
             body,
             "Invalid URL: Cannot parse `res` with value `456456-123-456456`: UUID parsing failed: invalid group count: expected 5, found 3"
